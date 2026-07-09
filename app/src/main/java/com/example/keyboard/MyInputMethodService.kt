@@ -35,6 +35,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.unit.IntOffset
+import com.example.data.LayoutDefaults
 
 class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
 
@@ -57,12 +65,24 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
     private val currentWordBuffer = StringBuilder()
     private val lastWordState = mutableStateOf<String?>(null)
     private var predictionsState = mutableStateOf<List<String>>(emptyList())
+    private var updatePredictionsJob: kotlinx.coroutines.Job? = null
     private var isShifted = mutableStateOf(false)
     private var isSymbols = mutableStateOf(false)
     private var currentLangCode = mutableStateOf("en")
+
+    private fun getSavedLanguage(): String {
+        val prefs = getSharedPreferences("keyboard_settings", Context.MODE_PRIVATE)
+        return prefs.getString("selected_language", "en") ?: "en"
+    }
+
+    private fun saveLanguage(langCode: String) {
+        val prefs = getSharedPreferences("keyboard_settings", Context.MODE_PRIVATE)
+        prefs.edit().putString("selected_language", langCode).apply()
+    }
     private var showDiagnosticOverlay = mutableStateOf(false)
     private val showClipboardOverlay = mutableStateOf(false)
     private val showEmojiOverlay = mutableStateOf(false)
+    private val showLayoutPicker = mutableStateOf(false)
     private val selectedAuxTab = mutableStateOf<String?>(null) // "Edit", "Clip", "Fn", "Num" or null
     private val isAuxLocked = mutableStateOf(false)
     private val isSelectModeActive = mutableStateOf(false)
@@ -97,6 +117,8 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
         savedStateRegistryController.performRestore(null)
         super.onCreate()
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
+
+        currentLangCode.value = getSavedLanguage()
 
         clipboardManager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         try {
@@ -218,6 +240,93 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
         isSelectModeActive.value = false
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
+    }
+
+    @Composable
+    private fun LayoutPickerOverlay(
+        theme: ThemeEntity,
+        onLayoutSelected: (String) -> Unit,
+        onLanguageSelected: (String) -> Unit,
+        onClose: () -> Unit
+    ) {
+        val bgColor = Color(theme.backgroundColor)
+        val keyColor = Color(theme.keyBackgroundColor)
+        val txtColor = Color(theme.keyTextColor)
+        val activeColor = Color(theme.activeKeyBackgroundColor)
+
+        val layouts = listOf("QWERTY", "AZERTY", "QWERTZ", "DVORAK", "COLEMAK", "NUMERIC", "MiscSymbols")
+        
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(260.dp)
+                .background(bgColor)
+                .padding(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Select Layout / Language", color = txtColor, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Box(
+                    modifier = Modifier
+                        .background(activeColor, RoundedCornerShape(4.dp))
+                        .clickable { onClose() }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text("Done", color = txtColor, fontSize = 12.sp)
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(8.dp))
+            
+            Row(modifier = Modifier.fillMaxSize()) {
+                // Layouts Column
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Layouts", color = txtColor.copy(alpha = 0.6f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        items(layouts) { l ->
+                            val isSelected = layoutState.value.layoutType == l
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp)
+                                    .background(if (isSelected) activeColor else keyColor, RoundedCornerShape(4.dp))
+                                    .clickable { onLayoutSelected(l) }
+                                    .padding(8.dp)
+                            ) {
+                                Text(text = l, color = txtColor, fontSize = 13.sp)
+                            }
+                        }
+                    }
+                }
+                
+                Spacer(modifier = Modifier.width(8.dp))
+                
+                // Languages Column
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Languages", color = txtColor.copy(alpha = 0.6f), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        items(downloadedLanguages) { lang ->
+                            val isSelected = currentLangCode.value == lang
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 2.dp)
+                                    .background(if (isSelected) activeColor else keyColor, RoundedCornerShape(4.dp))
+                                    .clickable { onLanguageSelected(lang) }
+                                    .padding(8.dp)
+                            ) {
+                                Text(text = lang.uppercase(), color = txtColor, fontSize = 13.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     override fun onCreateInputView(): View {
@@ -359,9 +468,11 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
                     ) {
                         TabButton(
                             text = "Edit",
-                            isActive = activeAuxTab == "Edit",
+                            isActive = activeAuxTab == "Edit" && !showEmojiOverlay.value,
                             onClick = {
                                 selectedAuxTab.value = if (activeAuxTab == "Edit") null else "Edit"
+                                showEmojiOverlay.value = false
+                                showLayoutPicker.value = false
                             },
                             textColor = txtColor,
                             activeColor = activeColor
@@ -369,9 +480,11 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
 
                         TabButton(
                             icon = "📋",
-                            isActive = activeAuxTab == "Clip",
+                            isActive = activeAuxTab == "Clip" && !showEmojiOverlay.value,
                             onClick = {
                                 selectedAuxTab.value = if (activeAuxTab == "Clip") null else "Clip"
+                                showEmojiOverlay.value = false
+                                showLayoutPicker.value = false
                             },
                             textColor = txtColor,
                             activeColor = activeColor
@@ -379,9 +492,11 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
 
                         TabButton(
                             text = "Fn",
-                            isActive = activeAuxTab == "Fn",
+                            isActive = activeAuxTab == "Fn" && !showEmojiOverlay.value,
                             onClick = {
                                 selectedAuxTab.value = if (activeAuxTab == "Fn") null else "Fn"
+                                showEmojiOverlay.value = false
+                                showLayoutPicker.value = false
                             },
                             textColor = txtColor,
                             activeColor = activeColor
@@ -389,9 +504,24 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
 
                         TabButton(
                             icon = "⌨️",
-                            isActive = activeAuxTab == "Num",
+                            isActive = activeAuxTab == "Num" && !showEmojiOverlay.value,
                             onClick = {
                                 selectedAuxTab.value = if (activeAuxTab == "Num") null else "Num"
+                                showEmojiOverlay.value = false
+                                showLayoutPicker.value = false
+                            },
+                            textColor = txtColor,
+                            activeColor = activeColor
+                        )
+
+                        TabButton(
+                            icon = "😀",
+                            isActive = showEmojiOverlay.value,
+                            onClick = {
+                                showEmojiOverlay.value = !showEmojiOverlay.value
+                                selectedAuxTab.value = null
+                                showClipboardOverlay.value = false
+                                showLayoutPicker.value = false
                             },
                             textColor = txtColor,
                             activeColor = activeColor
@@ -542,8 +672,31 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
                         else -> {
                             val clipVisible by showClipboardOverlay
                             val emojiVisible by showEmojiOverlay
+                            val layoutVisible by showLayoutPicker
 
-                            if (clipVisible) {
+                            if (layoutVisible) {
+                                LayoutPickerOverlay(
+                                    theme = theme,
+                                    onLayoutSelected = { lType ->
+                                        scope.launch {
+                                            val current = layoutState.value
+                                            repository.saveLayout(current.copy(layoutType = lType))
+                                        }
+                                        showLayoutPicker.value = false
+                                    },
+                                    onLanguageSelected = { lang ->
+                                        currentLangCode.value = lang
+                                        saveLanguage(lang)
+                                        lastWordState.value = null
+                                        resetBuffer()
+                                        updatePredictions()
+                                        showLayoutPicker.value = false
+                                    },
+                                    onClose = {
+                                        showLayoutPicker.value = false
+                                    }
+                                )
+                            } else if (clipVisible) {
                                 ClipboardOverlay(
                                     theme = theme,
                                     repository = repository,
@@ -572,14 +725,18 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
                                     },
                                     onClose = {
                                         showEmojiOverlay.value = false
+                                    },
+                                    onOpenLayoutPicker = {
+                                        showEmojiOverlay.value = false
+                                        showLayoutPicker.value = true
                                     }
                                 )
                             } else {
                                 // Render Rows Based on Keyboard Type (Symbols, Numbers, Alphabetic Layouts)
                                 val rows = if (symbols) {
-                                    getSymbolRows()
+                                    getSymbolRows(androidx.compose.ui.platform.LocalContext.current)
                                 } else {
-                                    getLayoutRows(layout.layoutType, layout.showNumberRow)
+                                    getLayoutRows(androidx.compose.ui.platform.LocalContext.current, layout.layoutType, layout.showNumberRow)
                                 }
 
                                 rows.forEach { row ->
@@ -593,8 +750,30 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
                                             val displayLabel = getKeyDisplayLabel(keyLabel, shifted)
                                             val keyWeight = getKeyWeight(keyLabel)
                                             val secSym = getSecondarySymbol(keyLabel)
-                                            Box(
-                                                modifier = Modifier
+
+                                            val keyScope = rememberCoroutineScope()
+                                            var showPopup by remember { mutableStateOf(false) }
+                                            val density = androidx.compose.ui.platform.LocalDensity.current
+                                            val popupOffsetPx = remember {
+                                                density.run { IntOffset(0, -60.dp.roundToPx()) }
+                                            }
+
+                                            val isBackspace = keyLabel == "Backspace"
+                                            val keyModifier = if (isBackspace) {
+                                                Modifier
+                                                    .weight(keyWeight)
+                                                    .height(theme.keyHeightDp.dp)
+                                                    .padding(horizontal = (layout.keySpacingDp / 2).dp)
+                                                    .background(
+                                                        color = keyColor,
+                                                        shape = RoundedCornerShape(theme.borderRadius.dp)
+                                                    )
+                                                    .repeatingClickable(
+                                                        scope = keyScope,
+                                                        onClick = { handleKeyAction(keyLabel) }
+                                                    )
+                                            } else {
+                                                Modifier
                                                     .weight(keyWeight)
                                                     .height(theme.keyHeightDp.dp)
                                                     .padding(horizontal = (layout.keySpacingDp / 2).dp)
@@ -605,15 +784,51 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
                                                     .combinedClickable(
                                                         interactionSource = remember { MutableInteractionSource() },
                                                         indication = null,
-                                                        onClick = { handleKeyAction(keyLabel) },
+                                                        onClick = {
+                                                            if (keyLabel.length == 1) {
+                                                                showPopup = true
+                                                                keyScope.launch {
+                                                                    delay(150)
+                                                                    showPopup = false
+                                                                }
+                                                            }
+                                                            handleKeyAction(keyLabel)
+                                                        },
                                                         onLongClick = {
                                                             if (secSym != null && !symbols) {
                                                                 handleKeyPress(secSym)
                                                             }
                                                         }
-                                                    ),
+                                                    )
+                                            }
+
+                                            Box(
+                                                modifier = keyModifier,
                                                 contentAlignment = Alignment.Center
                                             ) {
+                                                if (showPopup && keyLabel.length == 1) {
+                                                    Popup(
+                                                        alignment = Alignment.TopCenter,
+                                                        offset = popupOffsetPx
+                                                    ) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .background(
+                                                                    color = activeColor,
+                                                                    shape = RoundedCornerShape(8.dp)
+                                                                )
+                                                                .padding(horizontal = 16.dp, vertical = 10.dp),
+                                                            contentAlignment = Alignment.Center
+                                                        ) {
+                                                            Text(
+                                                                text = displayLabel,
+                                                                color = txtColor,
+                                                                fontSize = 24.sp,
+                                                                fontWeight = FontWeight.Bold
+                                                            )
+                                                        }
+                                                    }
+                                                }
                                                 Text(
                                                     text = displayLabel,
                                                     color = txtColor,
@@ -867,12 +1082,11 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
             "ABC" -> {
                 isSymbols.value = false
             }
-            "Lang" -> {
-                cycleLanguages()
-            }
-            "Clip" -> {
-                showClipboardOverlay.value = !showClipboardOverlay.value
+            "Layout" -> {
+                showLayoutPicker.value = !showLayoutPicker.value
                 showEmojiOverlay.value = false
+                showClipboardOverlay.value = false
+                selectedAuxTab.value = null
             }
             "Emoji" -> {
                 showEmojiOverlay.value = !showEmojiOverlay.value
@@ -911,9 +1125,11 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
             currentWordBuffer.deleteCharAt(currentWordBuffer.length - 1)
             updatePredictions()
         } else {
-            lastWordState.value = null
-            resetBuffer()
-            updatePredictions()
+            if (lastWordState.value != null || predictionsState.value.isNotEmpty()) {
+                lastWordState.value = null
+                resetBuffer()
+                updatePredictions()
+            }
         }
     }
 
@@ -970,8 +1186,9 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
     }
 
     private fun updatePredictions() {
+        updatePredictionsJob?.cancel()
         val query = currentWordBuffer.toString()
-        scope.launch {
+        updatePredictionsJob = scope.launch {
             val list = if (query.isEmpty()) {
                 repository.getNextWordPredictions(lastWordState.value, currentLangCode.value)
             } else {
@@ -993,590 +1210,15 @@ class MyInputMethodService : InputMethodService(), LifecycleOwner, ViewModelStor
 
     private fun cycleLanguages() {
         if (downloadedLanguages.isEmpty()) return
-        val currentIndex = downloadedLanguages.indexOf(currentLangCode.value)
-        val nextIndex = (currentIndex + 1) % downloadedLanguages.size
-        currentLangCode.value = downloadedLanguages[nextIndex]
+        val current = currentLangCode.value
+        val currentIndex = downloadedLanguages.indexOf(current)
+        val nextIndex = if (currentIndex == -1) 0 else (currentIndex + 1) % downloadedLanguages.size
+        val nextLang = downloadedLanguages[nextIndex]
+        currentLangCode.value = nextLang
+        saveLanguage(nextLang)
         lastWordState.value = null
         resetBuffer()
         updatePredictions()
     }
 
-    private fun getSymbolRows(): List<List<String>> {
-        return listOf(
-            listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"),
-            listOf("@", "#", "$", "%", "&", "-", "+", "(", ")", "/"),
-            listOf("*", "\"", "'", ":", ";", "!", "?", "Backspace"),
-            listOf("ABC", "Lang", "Clip", "Space", "Emoji", "Enter")
-        )
-    }
-
-    private fun getLayoutRows(layoutType: String, showNumbers: Boolean): List<List<String>> {
-        val baseRows = mutableListOf<List<String>>()
-
-        if (showNumbers && layoutType != "NUMERIC") {
-            baseRows.add(listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0"))
-        }
-
-        when (layoutType) {
-            "QWERTY" -> {
-                baseRows.add(listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"))
-                baseRows.add(listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"))
-                baseRows.add(listOf("Shift", "z", "x", "c", "v", "b", "n", "m", "Backspace"))
-                baseRows.add(listOf("Sym", "Lang", "Clip", "Space", "Emoji", "Enter"))
-            }
-            "AZERTY" -> {
-                baseRows.add(listOf("a", "z", "e", "r", "t", "y", "u", "i", "o", "p"))
-                baseRows.add(listOf("q", "s", "d", "f", "g", "h", "j", "k", "l", "m"))
-                baseRows.add(listOf("Shift", "w", "x", "c", "v", "b", "n", "Backspace"))
-                baseRows.add(listOf("Sym", "Lang", "Clip", "Space", "Emoji", "Enter"))
-            }
-            "QWERTZ" -> {
-                baseRows.add(listOf("q", "w", "e", "r", "t", "z", "u", "i", "o", "p"))
-                baseRows.add(listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"))
-                baseRows.add(listOf("Shift", "y", "x", "c", "v", "b", "n", "m", "Backspace"))
-                baseRows.add(listOf("Sym", "Lang", "Clip", "Space", "Emoji", "Enter"))
-            }
-            "DVORAK" -> {
-                baseRows.add(listOf("'", ",", ".", "p", "y", "f", "g", "c", "r", "l"))
-                baseRows.add(listOf("a", "o", "e", "u", "i", "d", "h", "t", "n", "s"))
-                baseRows.add(listOf("Shift", ";", "q", "j", "k", "x", "b", "m", "w", "v", "z", "Backspace"))
-                baseRows.add(listOf("Sym", "Lang", "Clip", "Space", "Emoji", "Enter"))
-            }
-            "COLEMAK" -> {
-                baseRows.add(listOf("q", "w", "f", "p", "g", "j", "l", "u", "y", ";"))
-                baseRows.add(listOf("a", "r", "s", "t", "d", "h", "n", "e", "i", "o"))
-                baseRows.add(listOf("Shift", "z", "x", "c", "v", "b", "k", "m", "Backspace"))
-                baseRows.add(listOf("Sym", "Lang", "Clip", "Space", "Emoji", "Enter"))
-            }
-            "NUMERIC" -> {
-                return listOf(
-                    listOf("1", "2", "3"),
-                    listOf("4", "5", "6"),
-                    listOf("7", "8", "9"),
-                    listOf("-", "0", "Backspace"),
-                    listOf("Space", "Enter")
-                )
-            }
-            else -> {
-                // Fallback QWERTY
-                baseRows.add(listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p"))
-                baseRows.add(listOf("a", "s", "d", "f", "g", "h", "j", "k", "l"))
-                baseRows.add(listOf("Shift", "z", "x", "c", "v", "b", "n", "m", "Backspace"))
-                baseRows.add(listOf("Sym", "Lang", "Clip", "Space", "Emoji", "Enter"))
-            }
-        }
-        return baseRows
-    }
-
-    private fun getKeyWeight(label: String): Float {
-        return when (label) {
-            "Space" -> 3.2f
-            "Shift", "Backspace", "Enter" -> 1.8f
-            "Sym", "ABC", "Lang", "Clip", "Emoji" -> 1.1f
-            else -> 1f
-        }
-    }
-
-    private fun getSecondarySymbol(key: String): String? {
-        if (key.length != 1) return null
-        val lower = key.lowercase()
-        return when (lower) {
-            "q" -> "1"
-            "w" -> "2"
-            "e" -> "3"
-            "r" -> "4"
-            "t" -> "5"
-            "y" -> "6"
-            "u" -> "7"
-            "i" -> "8"
-            "o" -> "9"
-            "p" -> "0"
-            "a" -> "@"
-            "s" -> "#"
-            "d" -> "$"
-            "f" -> "%"
-            "g" -> "&"
-            "h" -> "*"
-            "j" -> "-"
-            "k" -> "+"
-            "l" -> "("
-            "z" -> ")"
-            "x" -> "\""
-            "c" -> "'"
-            "v" -> ":"
-            "b" -> ";"
-            "n" -> "!"
-            "m" -> "?"
-            else -> null
-        }
-    }
-}
-
-private fun getKeyDisplayLabel(label: String, isShifted: Boolean): String {
-    return when (label) {
-        "Space" -> "␣"
-        "Backspace" -> "⌫"
-        "Shift" -> "⇧"
-        "Enter" -> "↵"
-        "Lang" -> "🌐"
-        "Clip" -> "📋"
-        "Emoji" -> "😀"
-        else -> if (isShifted && label.length == 1) label.uppercase() else label
-    }
-}
-
-@androidx.compose.runtime.Composable
-private fun ClipboardOverlay(
-    theme: com.example.data.ThemeEntity,
-    repository: com.example.data.KeyboardRepository,
-    onPaste: (String) -> Unit,
-    onClose: () -> Unit
-) {
-    val clipboardList by repository.clipboardHistoryFlow.collectAsState(initial = emptyList())
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    
-    val keyColor = androidx.compose.ui.graphics.Color(theme.keyBackgroundColor)
-    val activeColor = androidx.compose.ui.graphics.Color(theme.activeKeyBackgroundColor)
-    val txtColor = androidx.compose.ui.graphics.Color(theme.keyTextColor)
-
-    androidx.compose.foundation.layout.Column(
-        modifier = androidx.compose.ui.Modifier
-            .fillMaxWidth()
-            .height(230.dp)
-            .padding(horizontal = 8.dp)
-    ) {
-        // Header
-        androidx.compose.foundation.layout.Row(
-            modifier = androidx.compose.ui.Modifier.fillMaxWidth().padding(vertical = 4.dp),
-            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-        ) {
-            androidx.compose.material3.Text(
-                text = "Clipboard Manager",
-                color = txtColor,
-                fontSize = 14.sp,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-            )
-            androidx.compose.foundation.layout.Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
-                // Clear All Button
-                androidx.compose.foundation.layout.Box(
-                    modifier = androidx.compose.ui.Modifier
-                        .background(activeColor.copy(alpha = 0.8f), shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp))
-                        .clickable {
-                            scope.launch {
-                                repository.clearClipboardHistory()
-                            }
-                        }
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    androidx.compose.material3.Text("Clear All", color = txtColor, fontSize = 11.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium)
-                }
-                // Close Button
-                androidx.compose.foundation.layout.Box(
-                    modifier = androidx.compose.ui.Modifier
-                        .background(activeColor, shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp))
-                        .clickable { onClose() }
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    androidx.compose.material3.Text("Close", color = txtColor, fontSize = 11.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-                }
-            }
-        }
-
-        androidx.compose.foundation.layout.Spacer(modifier = androidx.compose.ui.Modifier.height(4.dp))
-
-        if (clipboardList.isEmpty()) {
-            androidx.compose.foundation.layout.Box(
-                modifier = androidx.compose.ui.Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .background(keyColor.copy(alpha = 0.5f), shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp)),
-                contentAlignment = androidx.compose.ui.Alignment.Center
-            ) {
-                androidx.compose.material3.Text(
-                    text = "No copied items yet",
-                    color = txtColor.copy(alpha = 0.5f),
-                    fontSize = 13.sp
-                )
-            }
-        } else {
-            androidx.compose.foundation.lazy.LazyColumn(
-                modifier = androidx.compose.ui.Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .background(keyColor.copy(alpha = 0.5f), shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
-                    .padding(4.dp),
-                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp)
-            ) {
-                items(clipboardList) { item ->
-                    androidx.compose.foundation.layout.Row(
-                        modifier = androidx.compose.ui.Modifier
-                            .fillMaxWidth()
-                            .background(keyColor, shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp))
-                            .clickable { onPaste(item.text) }
-                            .padding(8.dp),
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween
-                    ) {
-                        androidx.compose.material3.Text(
-                            text = item.text,
-                            color = txtColor,
-                            fontSize = 13.sp,
-                            maxLines = 2,
-                            modifier = androidx.compose.ui.Modifier.weight(1f).padding(end = 8.dp)
-                        )
-                        // Delete Button
-                        androidx.compose.material3.Text(
-                            text = "❌",
-                            color = androidx.compose.ui.graphics.Color.Red,
-                            fontSize = 12.sp,
-                            modifier = androidx.compose.ui.Modifier
-                                .clickable {
-                                    scope.launch {
-                                        repository.deleteClipboardItem(item.id)
-                                    }
-                                }
-                                .padding(4.dp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@androidx.compose.runtime.Composable
-private fun EmojiOverlay(
-    theme: com.example.data.ThemeEntity,
-    onEmojiSelected: (String) -> Unit,
-    onClose: () -> Unit
-) {
-    val keyColor = androidx.compose.ui.graphics.Color(theme.keyBackgroundColor)
-    val activeColor = androidx.compose.ui.graphics.Color(theme.activeKeyBackgroundColor)
-    val txtColor = androidx.compose.ui.graphics.Color(theme.keyTextColor)
-
-    val emojiCategories = listOf(
-        "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌", "😍", "🥰",
-        "😘", "😗", "😙", "😚", "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓", "😎", "🤩", "🥳", "😏",
-        "😒", "😞", "😔", "😟", "😕", "🙁", "☹️", "😣", "😖", "😫", "😩", "🥺", "😢", "😭", "😤", "😠",
-        "😡", "🤬", "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰", "😥", "😓", "🤗", "🤔", "🤭", "🤫", "🤥",
-        "😶", "😐", "😑", "😬", "🙄", "😯", "😦", "😧", "😮", "😲", "🥱", "😴", "🤤", "😪", "😵", "🤐",
-        "🥴", "🤢", "🤮", "🤧", "😷", "🤒", "🤕", "🤑", "🤠", "😈", "👿", "👹", "👺", "🤡", "💩", "👻",
-        "💀", "☠️", "👽", "👾", "🤖", "🎃", "😺", "😸", "😹", "😻", "😼", "😽", "🙀", "😿", "😾",
-        "👋", "🤚", "🖐️", "✋", "🖖", "👌", "🤌", "🤏", "✌️", "🤞", "🤟", "🤘", "🤙", "👈", "👉", "👆",
-        "🖕", "👇", "☝️", "👍", "👎", "✊", "👊", "🤛", "🤜", "👏", "🙌", "👐", "🤲", "🤝", "🙏", "✍️",
-        "💅", "🤳", "💪", "🦾", "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "🤎", "💔", "❤️‍🔥", "❤️‍🩹"
-    )
-
-    androidx.compose.foundation.layout.Column(
-        modifier = androidx.compose.ui.Modifier
-            .fillMaxWidth()
-            .height(230.dp)
-            .padding(horizontal = 8.dp)
-    ) {
-        // Header
-        androidx.compose.foundation.layout.Row(
-            modifier = androidx.compose.ui.Modifier.fillMaxWidth().padding(vertical = 4.dp),
-            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween,
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
-        ) {
-            androidx.compose.material3.Text(
-                text = "Emoji Picker",
-                color = txtColor,
-                fontSize = 14.sp,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-            )
-            // Close Button
-            androidx.compose.foundation.layout.Box(
-                modifier = androidx.compose.ui.Modifier
-                    .background(activeColor, shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp))
-                    .clickable { onClose() }
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
-            ) {
-                androidx.compose.material3.Text("Close", color = txtColor, fontSize = 11.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-            }
-        }
-
-        androidx.compose.foundation.layout.Spacer(modifier = androidx.compose.ui.Modifier.height(4.dp))
-
-        // Grid of Emojis
-        androidx.compose.foundation.lazy.LazyColumn(
-            modifier = androidx.compose.ui.Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .background(keyColor.copy(alpha = 0.5f), shape = androidx.compose.foundation.shape.RoundedCornerShape(6.dp))
-                .padding(4.dp)
-        ) {
-            val columns = 8
-            val chunked = emojiCategories.chunked(columns)
-            items(chunked) { rowEmojis ->
-                androidx.compose.foundation.layout.Row(
-                    modifier = androidx.compose.ui.Modifier.fillMaxWidth(),
-                    horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceEvenly
-                ) {
-                    rowEmojis.forEach { emoji ->
-                        androidx.compose.foundation.layout.Box(
-                            modifier = androidx.compose.ui.Modifier
-                                .size(40.dp)
-                                .clickable { onEmojiSelected(emoji) },
-                            contentAlignment = androidx.compose.ui.Alignment.Center
-                        ) {
-                            androidx.compose.material3.Text(text = emoji, fontSize = 22.sp)
-                        }
-                    }
-                    if (rowEmojis.size < columns) {
-                        repeat(columns - rowEmojis.size) {
-                            androidx.compose.foundation.layout.Spacer(modifier = androidx.compose.ui.Modifier.size(40.dp))
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun TabButton(
-    text: String? = null,
-    icon: String? = null,
-    isActive: Boolean,
-    onClick: () -> Unit,
-    textColor: Color,
-    activeColor: Color
-) {
-    Box(
-        modifier = Modifier
-            .background(
-                color = if (isActive) activeColor else Color.Transparent,
-                shape = RoundedCornerShape(4.dp)
-            )
-            .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        if (text != null) {
-            Text(
-                text = text,
-                color = textColor,
-                fontSize = 14.sp,
-                fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
-            )
-        } else if (icon != null) {
-            Text(
-                text = icon,
-                fontSize = 16.sp
-            )
-        }
-    }
-}
-
-@Composable
-private fun EditLayout(
-    theme: com.example.data.ThemeEntity,
-    isSelectMode: Boolean,
-    onToggleSelectMode: () -> Unit,
-    onKeyAction: (String) -> Unit
-) {
-    val keyColor = Color(theme.keyBackgroundColor)
-    val activeColor = Color(theme.activeKeyBackgroundColor)
-    val txtColor = Color(theme.keyTextColor)
-
-    val rows = listOf(
-        listOf("✂️", "📋", "▲", "📄", "⌨️▼"),
-        listOf("↪️", "◀", "⛶", "▶", "↩️"),
-        listOf("SelAll", "|◀", "▼", "▶|", "⌫"),
-        listOf("Lock", "⇞", "_", "⇟", "↵")
-    )
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        rows.forEach { row ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                row.forEach { label ->
-                    val isSelectKey = label == "⛶"
-                    val isSpecial = label == "Lock"
-                    val keyBgColor = when {
-                        isSelectKey && isSelectMode -> activeColor
-                        label == "Space" || label == "_" -> activeColor
-                        isSpecial -> Color(0xFFFF9800) // Orange lock
-                        else -> keyColor
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(theme.keyHeightDp.dp)
-                            .background(keyBgColor, shape = RoundedCornerShape(theme.borderRadius.dp))
-                            .clickable {
-                                if (label == "⛶") {
-                                    onToggleSelectMode()
-                                } else {
-                                    onKeyAction(label)
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = label,
-                            color = txtColor,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun FnLayout(
-    theme: com.example.data.ThemeEntity,
-    fontScale: Float,
-    isLocked: Boolean,
-    onToggleLock: () -> Unit,
-    onKeyAction: (String) -> Unit
-) {
-    val keyColor = Color(theme.keyBackgroundColor)
-    val activeColor = Color(theme.activeKeyBackgroundColor)
-    val txtColor = Color(theme.keyTextColor)
-
-    val rows = listOf(
-        listOf("Esc", "F1", "F2", "F3", "Info", "⚙️"),
-        listOf("⇥", "F4", "F5", "F6", "^C", "date"),
-        listOf("Caps", "F7", "F8", "F9", "SysRq", "time"),
-        listOf("Insert", "F10", "F11", "F12", "ScrLck", "find"),
-        listOf("Lock", "Ctrl", "_", "Alt", "NumLck", "↵")
-    )
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        rows.forEach { row ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                row.forEach { label ->
-                    val isSpecialLock = label == "Lock"
-                    val keyBgColor = when {
-                        isSpecialLock && isLocked -> Color(0xFFFF9800)
-                        isSpecialLock -> Color(0xFFFF9800).copy(alpha = 0.6f)
-                        label == "_" -> activeColor
-                        else -> keyColor
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height((theme.keyHeightDp * 0.9f).dp)
-                            .background(keyBgColor, shape = RoundedCornerShape(theme.borderRadius.dp))
-                            .clickable {
-                                if (label == "Lock") {
-                                    onToggleLock()
-                                } else {
-                                    onKeyAction(label)
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = label,
-                            color = txtColor,
-                            fontSize = (if (label.length > 2) 11 * fontScale else 14 * fontScale).sp,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun NumLayout(
-    theme: com.example.data.ThemeEntity,
-    isLocked: Boolean,
-    onToggleLock: () -> Unit,
-    onKeyAction: (String) -> Unit
-) {
-    val keyColor = Color(theme.keyBackgroundColor)
-    val activeColor = Color(theme.activeKeyBackgroundColor)
-    val txtColor = Color(theme.keyTextColor)
-    val isThemeDark = theme.backgroundColor == 0xFF121212 || theme.backgroundColor == 0xFF1C1C1C || theme.backgroundColor == 0xFF000000
-
-    val rows = listOf(
-        listOf("/", "1", "2", "3", "⌫"),
-        listOf("*", "4", "5", "6", "#"),
-        listOf("+", "7", "8", "9", "-"),
-        listOf("Lock", ",", "0", ".", "↵")
-    )
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        rows.forEach { row ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                row.forEach { label ->
-                    val isDigit = label in listOf("0", "1", "2", "3", "4", "5", "6", "7", "8", "9")
-                    val isSpecialLock = label == "Lock"
-
-                    val (buttonBgColor, buttonTxtColor) = when {
-                        isSpecialLock -> {
-                            if (isLocked) Color(0xFFFF9800) to txtColor
-                            else Color(0xFFFF9800).copy(alpha = 0.6f) to txtColor
-                        }
-                        isDigit -> {
-                            if (isThemeDark) {
-                                Color(0xFF151515) to Color.White
-                            } else {
-                                Color(0xFF2C3E50) to Color.White
-                            }
-                        }
-                        else -> {
-                            keyColor to txtColor
-                        }
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(theme.keyHeightDp.dp)
-                            .background(buttonBgColor, shape = RoundedCornerShape(theme.borderRadius.dp))
-                            .clickable {
-                                if (label == "Lock") {
-                                    onToggleLock()
-                                } else {
-                                    onKeyAction(label)
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = label,
-                            color = buttonTxtColor,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-        }
-    }
 }

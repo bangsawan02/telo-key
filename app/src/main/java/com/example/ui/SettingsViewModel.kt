@@ -42,6 +42,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _downloadStatusMessage = MutableStateFlow<String?>(null)
     val downloadStatusMessage: StateFlow<String?> = _downloadStatusMessage.asStateFlow()
 
+    init {
+        viewModelScope.launch {
+            repository.updateIndonesianDictionaryIfOld()
+        }
+    }
+
     fun updateTheme(
         backgroundColor: Long? = null,
         keyBackgroundColor: Long? = null,

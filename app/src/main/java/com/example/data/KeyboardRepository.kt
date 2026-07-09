@@ -53,9 +53,9 @@ class KeyboardRepository(private val dao: KeyboardDao) {
                     DictionaryEntity(
                         languageCode = "id",
                         languageName = "Bahasa Indonesia",
-                        isDownloaded = true,
-                        wordCount = fallbackId.size,
-                        downloadUrl = "https://raw.githubusercontent.com/damz/indonesian-word-list/master/indonesian-word-list.txt"
+                        isDownloaded = false,
+                        wordCount = 0,
+                        downloadUrl = "https://raw.githubusercontent.com/sastrawi/sastrawi/master/data/kata-dasar.txt"
                     ),
                     DictionaryEntity(
                         languageCode = "es",
@@ -290,5 +290,19 @@ class KeyboardRepository(private val dao: KeyboardDao) {
 
     suspend fun clearClipboardHistory() = withContext(Dispatchers.IO) {
         dao.clearClipboardHistory()
+    }
+
+    suspend fun updateIndonesianDictionaryIfOld() = withContext(Dispatchers.IO) {
+        val dicts = dao.getAllDictionaries()
+        val idDict = dicts.find { it.languageCode == "id" }
+        if (idDict != null && idDict.downloadUrl == "https://raw.githubusercontent.com/damz/indonesian-word-list/master/indonesian-word-list.txt") {
+            val updatedDict = idDict.copy(
+                downloadUrl = "https://raw.githubusercontent.com/sastrawi/sastrawi/master/data/kata-dasar.txt",
+                isDownloaded = false,
+                wordCount = 0
+            )
+            dao.saveDictionaries(listOf(updatedDict))
+            dao.deleteWordsByLanguage("id")
+        }
     }
 }

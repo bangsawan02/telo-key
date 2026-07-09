@@ -1,0 +1,2 @@
+#!/bin/bash
+sed -i '1s/^/import kotlinx.coroutines.launch\nimport kotlinx.coroutines.delay\nimport androidx.compose.ui.composed\nimport androidx.compose.ui.input.pointer.pointerInput\nimport androidx.compose.foundation.gestures.awaitEachGesture\nimport androidx.compose.foundation.gestures.awaitFirstDown\nimport androidx.compose.foundation.gestures.waitForUpOrCancellation\n/' app/src/main/java/com/example/keyboard/KeyboardComponents.kt

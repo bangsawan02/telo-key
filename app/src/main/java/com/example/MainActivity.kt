@@ -28,6 +28,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Edit
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.DictionaryEntity
 import com.example.keyboard.KeyboardDiagnostics
@@ -111,12 +113,17 @@ fun MainSettingsScreen(
             Tab(
                 selected = activeTab == 1,
                 onClick = { activeTab = 1 },
-                text = { Text("Tema & Layout", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+                text = { Text("Tema", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
             )
             Tab(
                 selected = activeTab == 2,
                 onClick = { activeTab = 2 },
                 text = { Text("Kamus", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
+            )
+            Tab(
+                selected = activeTab == 3,
+                onClick = { activeTab = 3 },
+                text = { Text("Layouts", fontSize = 13.sp, fontWeight = FontWeight.Bold) }
             )
         }
 
@@ -367,7 +374,7 @@ fun MainSettingsScreen(
                         color = MaterialTheme.colorScheme.primary
                     )
 
-                    val layouts = listOf("QWERTY", "AZERTY", "QWERTZ", "DVORAK", "COLEMAK", "NUMERIC")
+                    val layouts = listOf("QWERTY", "AZERTY", "QWERTZ", "DVORAK", "COLEMAK", "NUMERIC", "MiscSymbols")
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -561,68 +568,6 @@ fun MainSettingsScreen(
                     Spacer(modifier = Modifier.height(16.dp))
 
                     // Form to add custom dictionary
-                    Text(
-                        text = "Tambah Kamus Kustom",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = "Masukkan URL daftar kata (wordlist) text offline untuk menambah dukungan bahasa kustom.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    var customName by remember { mutableStateOf("") }
-                    var customCode by remember { mutableStateOf("") }
-                    var customUrl by remember { mutableStateOf("") }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    OutlinedTextField(
-                        value = customName,
-                        onValueChange = { customName = it },
-                        label = { Text("Nama Bahasa (misal: Jerman)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    OutlinedTextField(
-                        value = customCode,
-                        onValueChange = { customCode = it },
-                        label = { Text("Kode Bahasa (misal: de)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    OutlinedTextField(
-                        value = customUrl,
-                        onValueChange = { customUrl = it },
-                        label = { Text("URL Unduhan (.txt newline separated)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Button(
-                        onClick = {
-                            viewModel.addDictionary(customCode, customName, customUrl)
-                            // Clear inputs
-                            customName = ""
-                            customCode = ""
-                            customUrl = ""
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("Tambah Kamus Baru")
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
                     HorizontalDivider()
                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -667,7 +612,6 @@ fun MainSettingsScreen(
                             ) {
                                 Column {
                                     Text(text = name, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                    Text(text = "Kode: $code", fontSize = 11.sp, color = Color.Gray)
                                 }
                                 if (isAlreadyAdded) {
                                     Text(
@@ -691,6 +635,9 @@ fun MainSettingsScreen(
                             }
                         }
                     }
+                }
+                3 -> {
+                    LayoutsEditorScreen()
                 }
             }
         }
@@ -856,6 +803,98 @@ fun DictionaryRow(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun LayoutsEditorScreen() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val prefs = context.getSharedPreferences("keyboard_settings", android.content.Context.MODE_PRIVATE)
+    
+    val layoutKeys = com.example.data.LayoutDefaults.defaults.keys.toList()
+    
+    var selectedLayout by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+    
+    if (selectedLayout != null) {
+        var jsonText by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(prefs.getString("layout_$selectedLayout", com.example.data.LayoutDefaults.defaults[selectedLayout]) ?: "") }
+        var isError by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+        
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { selectedLayout = null },
+            title = { androidx.compose.material3.Text("Edit $selectedLayout") },
+            text = {
+                androidx.compose.foundation.layout.Column {
+                    androidx.compose.material3.OutlinedTextField(
+                        value = jsonText,
+                        onValueChange = { 
+                            jsonText = it
+                            isError = false
+                        },
+                        modifier = Modifier.fillMaxWidth().height(300.dp),
+                        isError = isError,
+                        label = { androidx.compose.material3.Text("JSON Array of Arrays") },
+                        textStyle = androidx.compose.ui.text.TextStyle(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace, fontSize = 12.sp)
+                    )
+                    if (isError) {
+                        androidx.compose.material3.Text("Invalid JSON format. Must be like [[\"a\",\"b\"],[\"c\",\"d\"]]", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.Button(onClick = {
+                    try {
+                        org.json.JSONArray(jsonText)
+                        prefs.edit().putString("layout_$selectedLayout", jsonText).apply()
+                        selectedLayout = null
+                    } catch (e: Exception) {
+                        isError = true
+                    }
+                }) {
+                    androidx.compose.material3.Text("Save")
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    jsonText = com.example.data.LayoutDefaults.defaults[selectedLayout] ?: ""
+                }) {
+                    androidx.compose.material3.Text("Reset Default")
+                }
+            }
+        )
+    }
+
+    androidx.compose.material3.Text(
+        text = "Editor JSON Tata Letak (Layouts)",
+        fontSize = 18.sp,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(bottom = 8.dp)
+    )
+
+    androidx.compose.material3.Text(
+        text = "Edit susunan tombol keyboard untuk masing-masing layout secara langsung menggunakan format JSON.",
+        fontSize = 13.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(bottom = 16.dp)
+    )
+
+    layoutKeys.forEach { key ->
+        androidx.compose.material3.Card(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { selectedLayout = key },
+            colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            androidx.compose.foundation.layout.Row(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                androidx.compose.material3.Text(text = key, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                androidx.compose.material3.Icon(
+                    imageVector = androidx.compose.material.icons.Icons.Default.Edit,
+                    contentDescription = "Edit"
+                )
             }
         }
     }
